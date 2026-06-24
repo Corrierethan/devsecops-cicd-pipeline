@@ -1,0 +1,12 @@
+# TODO: implement in later ticket
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI pipeline not yet implemented"
