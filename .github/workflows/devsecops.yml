@@ -1,0 +1,11 @@
+# TODO: implement in later ticket
+name: DevSecOps Reusable Workflow
+
+on:
+  workflow_call:
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Reusable workflow not yet implemented"

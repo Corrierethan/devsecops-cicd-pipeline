@@ -52,8 +52,6 @@ devsecops-cicd-pipeline/
 │   ├── adopting-this-pipeline.md
 │   ├── thresholds.md
 │   └── verifying-signatures.md
-└── scripts/
-    └── seed-issues.ps1
 ```
 
 ---
