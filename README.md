@@ -56,6 +56,21 @@ devsecops-cicd-pipeline/
 
 ---
 
+## Quick start
+
+```bash
+# 1. Install dependencies
+pip install -r app/requirements.txt
+
+# 2. Run the service locally
+APP_VERSION=1.0.0 uvicorn app.main:app --reload
+
+# 3. Run the test suite
+pytest app/ -v
+```
+
+---
+
 ## Adopting the reusable workflow
 
 ```yaml
