@@ -1,4 +1,5 @@
 """Minimal FastAPI service used to exercise the DevSecOps pipeline."""
+
 import os
 
 from fastapi import FastAPI
