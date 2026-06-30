@@ -62,3 +62,55 @@ jobs:
           name: coverage-report
           path: coverage.xml
           retention-days: 7
+
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    # Report-only for now: findings are surfaced in the Security tab but do
+    # not block the pipeline. Blocking is introduced later (see issue #11).
+    permissions:
+      contents: read
+      # Required to upload SARIF results to the code scanning tab.
+      security-events: write
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        # actions/setup-python@v5.3.0
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Semgrep (pinned)
+        run: pip install semgrep==1.96.0
+
+      - name: Run Semgrep (report-only, SARIF output)
+        # Managed rulesets + the repo's custom .semgrep.yml rules.
+        # continue-on-error keeps this stage non-blocking for now.
+        continue-on-error: true
+        run: >
+          semgrep scan
+          --config p/python
+          --config p/security-audit
+          --config p/secrets
+          --config .semgrep.yml
+          --sarif --output semgrep.sarif
+          app/
+
+      - name: Upload SARIF to code scanning
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload SARIF artifact
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          retention-days: 7

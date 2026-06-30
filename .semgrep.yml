@@ -1,0 +1,28 @@
+rules:
+  - id: dangerous-eval
+    languages: [python]
+    severity: ERROR
+    message: >
+      Use of eval() on untrusted input allows arbitrary code execution.
+      Replace with a safe parser (e.g. ast.literal_eval) or remove entirely.
+    metadata:
+      cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code (Eval Injection)"
+      owasp: "A03:2021 - Injection"
+      nist: "SA-11"
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+
+  - id: subprocess-shell-true
+    languages: [python]
+    severity: WARNING
+    message: >
+      subprocess call with shell=True can lead to OS command injection when
+      arguments include untrusted input. Pass an argument list and shell=False.
+    metadata:
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      nist: "SA-11"
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
