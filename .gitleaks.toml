@@ -1,0 +1,24 @@
+# Ascent DevSecOps — Gitleaks configuration
+# Maps to NIST IA-5 (authenticator management) and SI-12 (information handling).
+title = "Ascent DevSecOps Gitleaks config"
+
+# Start from the maintained default ruleset, then layer repo-specific rules.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist for test fixtures and documented example credentials"
+
+# Files/paths that intentionally contain fake/sample secrets for testing.
+paths = [
+  '''tests/fixtures/.*''',
+  '''.*\.example$''',
+  '''.*terraform\.tfvars\.example$''',
+]
+
+# Well-known, non-functional example values published in vendor docs.
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+  '''EXAMPLE''',
+]

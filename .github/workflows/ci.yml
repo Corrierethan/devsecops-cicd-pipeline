@@ -121,3 +121,59 @@ jobs:
           name: semgrep-sarif
           path: semgrep.sarif
           retention-days: 7
+
+  secret-scan:
+    name: Secret Scan (Gitleaks)
+    runs-on: ubuntu-latest
+    # Blocking gate: any detected secret fails the job (NIST IA-5, SI-12).
+    permissions:
+      contents: read
+      # Required to upload SARIF results to the code scanning tab.
+      security-events: write
+    steps:
+      - name: Checkout (full history)
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # Full history so secrets in any past commit are detected.
+          fetch-depth: 0
+
+      - name: Install Gitleaks (pinned)
+        env:
+          GITLEAKS_VERSION: 8.21.2
+        run: |
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run Gitleaks (full history, blocking)
+        # Exits non-zero on any finding, which fails this blocking gate.
+        run: |
+          gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --redact \
+            --exit-code 1
+
+      - name: Upload SARIF to code scanning
+        # Run even when the scan fails so findings reach the Security tab.
+        if: always()
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Upload SARIF artifact
+        if: always()
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: gitleaks-sarif
+          path: gitleaks.sarif
+          retention-days: 7
