@@ -200,7 +200,7 @@ jobs:
 
       - name: Install Trivy (pinned)
         env:
-          TRIVY_VERSION: "0.57.1"
+          TRIVY_VERSION: "0.72.0"
         run: |
           curl -sSfL \
             "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
@@ -210,6 +210,8 @@ jobs:
           trivy --version
 
       - name: Trivy filesystem scan (report-only, SARIF)
+        # Runs even if install flaked so the SARIF placeholder is guaranteed.
+        if: always()
         # Severity: HIGH+CRITICAL. --exit-code 0 keeps this report-only until #11.
         run: |
           trivy fs . \
@@ -350,7 +352,7 @@ jobs:
 
       - name: Install Trivy (pinned)
         env:
-          TRIVY_VERSION: "0.57.1"
+          TRIVY_VERSION: "0.72.0"
         run: |
           curl -sSfL \
             "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
