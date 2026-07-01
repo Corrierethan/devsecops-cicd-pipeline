@@ -112,11 +112,13 @@ aws iam put-role-policy \
 | Type | Name | Value |
 |------|------|-------|
 | Secret | `AWS_ROLE_ARN` | `arn:aws-us-gov:iam::ACCOUNT_ID:role/github-actions-devsecops-cicd` |
+| Variable | `ENABLE_ECR` | `true` *(gates the `build` + `container-scan` jobs; when unset they skip)* |
 | Variable | `AWS_REGION` | `us-gov-west-1` *(or omit to use workflow default)* |
 | Variable | `ECR_REPOSITORY` | `devsecops-cicd-pipeline` *(or omit to use workflow default)* |
 
 ```bash
 gh secret set AWS_ROLE_ARN --body "arn:aws-us-gov:iam::ACCOUNT_ID:role/github-actions-devsecops-cicd"
+gh variable set ENABLE_ECR --body "true"
 gh variable set AWS_REGION  --body "us-gov-west-1"
 gh variable set ECR_REPOSITORY --body "devsecops-cicd-pipeline"
 ```
