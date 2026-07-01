@@ -177,3 +177,230 @@ jobs:
           name: gitleaks-sarif
           path: gitleaks.sarif
           retention-days: 7
+
+  sca:
+    name: SCA (Trivy fs + pip-audit)
+    runs-on: ubuntu-latest
+    # Report-only until #11 (severity blocking). Maps to NIST SA-11, SR-3.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Cache Trivy vulnerability DB
+        # actions/cache@v4.2.3
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Install Trivy (pinned)
+        env:
+          TRIVY_VERSION: "0.72.0"
+        run: |
+          curl -sSfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          sudo mv trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Trivy filesystem scan (report-only, SARIF)
+        # Runs even if install flaked so the SARIF placeholder is guaranteed.
+        if: always()
+        # Severity: HIGH+CRITICAL. --exit-code 0 keeps this report-only until #11.
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format sarif \
+            --output trivy-fs.sarif \
+            --cache-dir ~/.cache/trivy \
+            --exit-code 0 || echo "trivy fs failed (report-only)"
+          # Guarantee a valid SARIF exists even if trivy aborted (e.g. DB
+          # download failure), so the upload steps never hard-fail this gate.
+          if [ ! -s trivy-fs.sarif ]; then
+            echo "No SARIF produced; writing empty SARIF placeholder."
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"trivy","rules":[]}},"results":[]}]}' > trivy-fs.sarif
+          fi
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Upload Trivy SARIF artifact
+        if: always()
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: trivy-fs-sarif
+          path: trivy-fs.sarif
+          retention-days: 7
+
+      - name: Set up Python
+        # actions/setup-python@v5.3.0
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: pip-audit (second-opinion, report-only)
+        # continue-on-error keeps this non-blocking until #11.
+        continue-on-error: true
+        run: |
+          pip install pip-audit==2.7.3
+          pip-audit -r app/requirements.txt --desc
+
+  build:
+    name: Build & Push (ECR)
+    runs-on: ubuntu-latest
+    needs: [lint, test, secret-scan]
+    # Only runs when ECR publishing is enabled (repo variable ENABLE_ECR=true
+    # plus the AWS_ROLE_ARN secret — see docs/ecr-setup.md). Also skips on forks
+    # that lack the AWS secrets. Skips cleanly (green) when not configured.
+    if: >-
+      vars.ENABLE_ECR == 'true' &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    # Maps to NIST CM-3, CM-14. OIDC — no static keys (IA-5).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Override via repository variables; defaults target AWS GovCloud.
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-gov-west-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'devsecops-cicd-pipeline' }}
+    outputs:
+      registry: ${{ steps.ecr-login.outputs.registry }}
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Docker Buildx
+        # docker/setup-buildx-action@v3.7.1
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349
+
+      - name: Configure AWS credentials (OIDC — no static keys)
+        # aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        # aws-actions/amazon-ecr-login@v2.0.1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+
+      - name: Build, tag, and push image
+        id: push
+        # docker/build-push-action@v6.18.0
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          # Layer cache via GitHub Actions cache backend (safe for private ECR).
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Disable provenance attestation; added explicitly via Cosign in #10.
+          provenance: false
+
+  container-scan:
+    name: Container Scan (Trivy image)
+    runs-on: ubuntu-latest
+    needs: build
+    # Report-only until #11. Only runs when ECR publishing is enabled.
+    if: >-
+      vars.ENABLE_ECR == 'true' &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    # Maps to NIST SI-2, RA-5.
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-gov-west-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'devsecops-cicd-pipeline' }}
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Cache Trivy vulnerability DB
+        # actions/cache@v4.2.3
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Install Trivy (pinned)
+        env:
+          TRIVY_VERSION: "0.72.0"
+        run: |
+          curl -sSfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          sudo mv trivy /usr/local/bin/trivy
+
+      - name: Configure AWS credentials (OIDC)
+        # aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        # aws-actions/amazon-ecr-login@v2.0.1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+
+      - name: Trivy image scan (report-only, SARIF)
+        # Scans by immutable digest — never a mutable tag. --exit-code 0 = report-only.
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format sarif \
+            --output trivy-image.sarif \
+            --cache-dir ~/.cache/trivy \
+            --exit-code 0 \
+            "${{ needs.build.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ needs.build.outputs.image-digest }}" || echo "trivy image failed (report-only)"
+          if [ ! -s trivy-image.sarif ]; then
+            echo "No SARIF produced; writing empty SARIF placeholder."
+            echo '{"version":"2.1.0","$schema":"https://json.schemastore.org/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"trivy","rules":[]}},"results":[]}]}' > trivy-image.sarif
+          fi
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Upload SARIF artifact
+        if: always()
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif
+          retention-days: 7
