@@ -177,3 +177,214 @@ jobs:
           name: gitleaks-sarif
           path: gitleaks.sarif
           retention-days: 7
+
+  sca:
+    name: SCA (Trivy fs + pip-audit)
+    runs-on: ubuntu-latest
+    # Report-only until #11 (severity blocking). Maps to NIST SA-11, SR-3.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Cache Trivy vulnerability DB
+        # actions/cache@v4.1.2
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Install Trivy (pinned)
+        env:
+          TRIVY_VERSION: "0.57.1"
+        run: |
+          curl -sSfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          sudo mv trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Trivy filesystem scan (report-only, SARIF)
+        # Severity: HIGH+CRITICAL. --exit-code 0 keeps this report-only until #11.
+        run: |
+          trivy fs . \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format sarif \
+            --output trivy-fs.sarif \
+            --cache-dir ~/.cache/trivy \
+            --exit-code 0
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Upload Trivy SARIF artifact
+        if: always()
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: trivy-fs-sarif
+          path: trivy-fs.sarif
+          retention-days: 7
+
+      - name: Set up Python
+        # actions/setup-python@v5.3.0
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: pip-audit (second-opinion, report-only)
+        # continue-on-error keeps this non-blocking until #11.
+        continue-on-error: true
+        run: |
+          pip install pip-audit==2.7.3
+          pip-audit -r app/requirements.txt --desc
+
+  build:
+    name: Build & Push (ECR)
+    runs-on: ubuntu-latest
+    needs: [lint, test, secret-scan]
+    # Skip on forks that lack AWS secrets; run on same-repo PRs and pushes.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Maps to NIST CM-3, CM-14. OIDC — no static keys (IA-5).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Override via repository variables; defaults target AWS GovCloud.
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-gov-west-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'devsecops-cicd-pipeline' }}
+    outputs:
+      registry: ${{ steps.ecr-login.outputs.registry }}
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Docker Buildx
+        # docker/setup-buildx-action@v3.0.0
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226
+
+      - name: Configure AWS credentials (OIDC — no static keys)
+        # aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        # aws-actions/amazon-ecr-login@v2.0.1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+
+      - name: Build, tag, and push image
+        id: push
+        # docker/build-push-action@v5.0.0
+        uses: docker/build-push-action@af925a7bf9bac9ea3e6a3d44b1db6c35c3be7db0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          # Layer cache via GitHub Actions cache backend (safe for private ECR).
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Disable provenance attestation; added explicitly via Cosign in #10.
+          provenance: false
+
+  container-scan:
+    name: Container Scan (Trivy image)
+    runs-on: ubuntu-latest
+    needs: build
+    # Report-only until #11. Mirrors build job's fork guard.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Maps to NIST SI-2, RA-5.
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-gov-west-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'devsecops-cicd-pipeline' }}
+    steps:
+      - name: Checkout
+        # actions/checkout@v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Cache Trivy vulnerability DB
+        # actions/cache@v4.1.2
+        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      - name: Install Trivy (pinned)
+        env:
+          TRIVY_VERSION: "0.57.1"
+        run: |
+          curl -sSfL \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            -o trivy.tar.gz
+          tar -xzf trivy.tar.gz trivy
+          sudo mv trivy /usr/local/bin/trivy
+
+      - name: Configure AWS credentials (OIDC)
+        # aws-actions/configure-aws-credentials@v4.0.2
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Log in to Amazon ECR
+        # aws-actions/amazon-ecr-login@v2.0.1
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+
+      - name: Trivy image scan (report-only, SARIF)
+        # Scans by immutable digest — never a mutable tag. --exit-code 0 = report-only.
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format sarif \
+            --output trivy-image.sarif \
+            --cache-dir ~/.cache/trivy \
+            --exit-code 0 \
+            "${{ needs.build.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ needs.build.outputs.image-digest }}"
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        # github/codeql-action/upload-sarif@v3.27.6
+        uses: github/codeql-action/upload-sarif@aa578102511db1f4524ed59b8cc2bae4f6e88195
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Upload SARIF artifact
+        if: always()
+        # actions/upload-artifact@v4.4.3
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif
+          retention-days: 7
