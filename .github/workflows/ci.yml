@@ -191,8 +191,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Cache Trivy vulnerability DB
-        # actions/cache@v4.1.2
-        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a
+        # actions/cache@v4.2.3
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: ~/.cache/trivy
           key: trivy-db-${{ runner.os }}-${{ github.run_id }}
@@ -276,8 +276,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Docker Buildx
-        # docker/setup-buildx-action@v3.0.0
-        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226
+        # docker/setup-buildx-action@v3.7.1
+        uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349
 
       - name: Configure AWS credentials (OIDC — no static keys)
         # aws-actions/configure-aws-credentials@v4.0.2
@@ -294,8 +294,8 @@ jobs:
 
       - name: Build, tag, and push image
         id: push
-        # docker/build-push-action@v5.0.0
-        uses: docker/build-push-action@af925a7bf9bac9ea3e6a3d44b1db6c35c3be7db0
+        # docker/build-push-action@v6.18.0
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
         with:
           context: .
           push: true
@@ -331,8 +331,8 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Cache Trivy vulnerability DB
-        # actions/cache@v4.1.2
-        uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a
+        # actions/cache@v4.2.3
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
           path: ~/.cache/trivy
           key: trivy-db-${{ runner.os }}-${{ github.run_id }}
